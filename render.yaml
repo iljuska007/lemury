@@ -1,0 +1,8 @@
+# Настройки для бесплатного хостинга на Render (render.com).
+services:
+  - type: web
+    name: vzryvnye-lemury
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: python3 server.py
