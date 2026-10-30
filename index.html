@@ -438,6 +438,75 @@ function setAva(s, id, ava) {
   const p = P(s, id) || fail("Тебя нет в игре");
   p.ava = cleanAva(ava);
 }
+const BOT_NAMES = ["Банан", "Манго", "Хвостик", "Ушастик", "Шаман", "Пират", "Кокос", "Папайя"];
+function addBot(s, id, rnd = Math.random) {
+  if (s.host !== id) fail("Ботов добавляет создатель игры");
+  if (s.status !== "lobby") fail("Ботов можно добавить только до старта");
+  if (s.players.length >= MAX_PLAYERS) fail("Мест нет: максимум " + MAX_PLAYERS);
+  const free = BOT_NAMES.filter(n => !s.players.some(p => p.name === "Бот " + n));
+  const name = "Бот " + free[Math.floor(rnd() * free.length)];
+  s.players.push({ id: "bot-" + Math.floor(rnd() * 1e9).toString(36), name, alive: true, hand: [], ava: randomAva(rnd), bot: true });
+  addLog(s, name + " присоединяется к вечеринке");
+}
+function removeBot(s, id, botId) {
+  if (s.host !== id || s.status !== "lobby") fail("Убрать бота может создатель игры до старта");
+  if (!P(s, botId)?.bot) fail("Это не бот");
+  s.players = s.players.filter(p => p.id !== botId);
+}
+
+// ---- Bot brain: one decision per call, always a legal move ----
+function botTurn(s, id, now, rnd = Math.random) {
+  const p = P(s, id);
+  const pick = arr => arr[Math.floor(rnd() * arr.length)];
+  if (s.phase === "placing") {
+    const n = s.deck.length;
+    return place(s, id, rnd() < .5 ? Math.floor(rnd() * Math.min(3, n + 1)) : Math.floor(rnd() * (n + 1)));
+  }
+  if (s.phase === "shaman") return shamanChoice(s, id, ["hole", "mini"].includes(s.shaman.t));
+  if (s.phase === "board") return boardTake(s, id, Math.floor(rnd() * 9));
+  const has = t => p.hand.find(c => c.t === t);
+  const playIt = (t, target = null) => play(s, id, has(t).id, target, now);
+  const mate = partner(s, id);
+  if (mate?.alive && p.hand.filter(c => c.t === "shield").length > 1 && !mate.hand.some(c => c.t === "shield")) return giveMango(s, id);
+  const knownTop = s.peek && s.peek.by === id ? s.peek.cards[0] : null;
+  if (knownTop === "hole" || knownTop === "mini") for (const t of ["warp", "beam", "reverse", "shuffle", "worm"]) if (has(t)) return playIt(t);
+  const holes = s.deck.filter(c => c.t === "hole").length;
+  const fear = holes / Math.max(1, s.deck.length) * (has("shield") ? 1 : 2.2);
+  if (!knownTop && fear > .2 && rnd() < .75) {
+    for (const t of ["beam", "warp", "reverse"]) if (has(t)) return playIt(t);
+    if (has("radar")) return playIt("radar");
+    if (has("shaman")) return playIt("shaman");
+  }
+  if (rnd() < .3) {
+    const victims = s.players.filter(q => q.alive && q.id !== id && q.hand.length && q.id !== mate?.id);
+    if (has("board") && victims.length) return playIt("board", pick(victims).id);
+    if (has("swap") && victims.length) {
+      const rich = victims.slice().sort((a, b) => b.hand.length - a.hand.length)[0];
+      if (rich.hand.length > p.hand.length + 1) return playIt("swap", rich.id);
+    }
+    if (has("spy") && victims.length && rnd() < .4) return playIt("spy", pick(victims).id);
+    if (!knownTop && has("radar") && rnd() < .5) return playIt("radar");
+  }
+  return draw(s, id);
+}
+function nextAlive(s, fromId) {
+  const k = s.players.length;
+  let i = s.players.findIndex(p => p.id === fromId);
+  for (let step = 0; step < k; step++) { i = (i + s.dir + k) % k; if (s.players[i].alive) return s.players[i].id; }
+  return null;
+}
+// Would this bot answer the pending card with «Неть!»?
+function botWantsJam(s, id, rnd = Math.random) {
+  const pd = s.pending;
+  if (!pd || !canJam(s, id) || !P(s, id)?.hand.some(c => c.t === "jam")) return false;
+  const mate = partner(s, id);
+  const cancelled = pd.jams.length % 2 === 1;
+  const friendly = pd.by === id || pd.by === mate?.id;
+  if (cancelled) return friendly && rnd() < .55;
+  if (friendly) return false;
+  const hurt = pd.target === id || pd.target === mate?.id || (pd.card.t === "beam" && nextAlive(s, pd.by) === id);
+  return hurt ? rnd() < .6 : rnd() < .05;
+}
 function setMode(s, id, mode) {
   if (s.host !== id) fail("Режим выбирает создатель игры");
   if (s.status !== "lobby") fail("Режим меняется только до старта");
@@ -1330,8 +1399,8 @@ function playDraw(s, ld) {
     };
     const [txt, snd] = lines[ld.res] || lines.safe;
     playDraw.t3 = setTimeout(() => { cap.textContent = txt; el.classList.add(ld.res); SFX.play(snd); if (ld.res === "boom") boomFX(); }, reveal ? 380 : 0);
-  }, reduced ? 100 : 950);
-  playDraw.t2 = setTimeout(() => { el.hidden = true; }, reduced ? 1600 : 2900);
+  }, reduced ? 100 : reveal ? 950 : 650);
+  playDraw.t2 = setTimeout(() => { el.hidden = true; }, reduced ? 1600 : reveal ? 2900 : 1500);
 }
 function bubble(pid, e) {
   const seat = document.querySelector(`.seat[data-pid="${CSS.escape(pid)}"]`);
@@ -1371,6 +1440,41 @@ function effects(s, myTurn, win) {
   if (win && !first) setTimeout(() => { SFX.play("win"); confettiFX(); }, drew ? 2300 : 0);
 }
 
+// ---------- Bots: the room's host runs them ----------
+let botTimer = null, botSeen = new Set();
+function driveBots() {
+  const s = game;
+  if (s?.lastDraw && driveBots.drawSeen?.n !== s.lastDraw.n) driveBots.drawSeen = { n: s.lastDraw.n, at: Date.now() };
+  if (!s || s.host !== me.id || s.status !== "play" || botTimer) return;
+  let job = null;
+  const pd = s.pending;
+  if (pd) {
+    for (const b of s.players.filter(p => p.bot && p.alive)) {
+      const key = pd.card.id + ":" + pd.jams.length + ":" + b.id;
+      if (botSeen.has(key)) continue;
+      botSeen.add(key);
+      if (!botWantsJam(s, b.id)) continue;
+      const cardId = pd.card.id;
+      job = { delay: 700 + Math.random() * 1300, run: (st, now) => {
+        const bb = P(st, b.id), j = bb?.hand.find(c => c.t === "jam");
+        if (!j || st.pending?.card.id !== cardId || !canJam(st, b.id)) return false;
+        jam(st, b.id, j.id, now);
+      } };
+      break;
+    }
+  } else {
+    const cur = P(s, curId(s));
+    if (cur?.bot && cur.alive) job = { delay: (s.lastDraw && Date.now() - (driveBots.drawSeen?.at || 0) < 3000 ? 2600 : 1200) + Math.random() * 900, run: (st, now) => {
+      if (st.status !== "play" || st.pending || curId(st) !== cur.id) return false;
+      try { botTurn(st, cur.id, now); } catch { try { draw(st, cur.id); } catch { return false; } }
+    } };
+  }
+  if (!job) return;
+  botTimer = setTimeout(async () => {
+    try { await mutate(job.run); } finally { botTimer = null; setTimeout(driveBots, 50); }
+  }, job.delay);
+}
+
 // ---------- Lobby ----------
 function renderLobby(note) {
   const gallery = ["hole", "mini", "shield", ...Object.keys(ACTION_COUNTS)].map(t => cardHTML({ t })).join("");
@@ -1395,7 +1499,8 @@ function renderLobby(note) {
           <button class="btn" id="joinCode">Войти</button></div>
       </div>
       <div class="panel"><span class="label">Как позвать друзей</span>
-        <div class="muted">Комнаты закрытые: их не видно в общем списке. Устрой вечеринку и отправь друзьям ссылку из комнаты — она сразу приведёт их к тебе. Или скажи им код из 4 букв.</div></div>
+        <div class="muted">Комнаты закрытые: их не видно в общем списке. Устрой вечеринку и отправь друзьям ссылку из комнаты — она сразу приведёт их к тебе. Или скажи им код из 4 букв.</div>
+        <div class="muted"><b style="color:var(--ink)">Друзья заняты?</b> Устрой вечеринку и нажми «🤖 Добавить бота» — играть можно и одному против ботов.</div></div>
     </div>
     <div class="steps">
       <div class="step"><b>Сыграй карты</b><span>В свой ход играй сколько хочешь карт: подглядывай в колоду, пропускай ход, грабь соседей.</span></div>
@@ -1444,7 +1549,7 @@ function enterGame(c, s, r) {
   store.set("lemur-game", c);
   code = c; game = s; rev = r;
   ui = { sel: null, target: null, placePos: 0, placeInit: false };
-  lastLogTop = null; lastTopCard = null; lastStatus = null; seen = null;
+  lastLogTop = null; lastTopCard = null; lastStatus = null; seen = null; botSeen = new Set();
   history.replaceState(null, "", "#" + c);
   renderGame();
   pollLoop(++pollToken);
@@ -1475,9 +1580,10 @@ function renderGame() {
   const seats = s.players.map((p, i) => `
     <div class="seat ${s.status === "play" && i === s.cur ? "turn" : ""} ${p.alive ? "" : "out"}" data-pid="${esc(p.id)}">
       <span class="ava">${avatar(p, i)}</span>
-      <span><span class="nm">${esc(p.name)}${p.id === me.id ? " (ты)" : ""}${p.id === s.host ? " 👑" : ""}</span>${s.mode === "teams" ? `<span class="team t${s.status === "lobby" ? i % 2 : p.team}">${TEAM_NAMES[s.status === "lobby" ? i % 2 : p.team]}</span>` : ""}<br>
+      <span><span class="nm">${p.bot ? "🤖 " : ""}${esc(p.name)}${p.id === me.id ? " (ты)" : ""}${p.id === s.host ? " 👑" : ""}</span>${s.mode === "teams" ? `<span class="team t${s.status === "lobby" ? i % 2 : p.team}">${TEAM_NAMES[s.status === "lobby" ? i % 2 : p.team]}</span>` : ""}<br>
       <span class="meta">${s.status === "lobby" ? "готов к вечеринке" : p.alive ? p.hand.length + " карт" + (s.status === "play" && i === s.cur && s.turnsLeft > 1 ? " · ходов: " + s.turnsLeft : "") : "взорвался 💥"}</span></span>
-      ${isHost && p.id !== me.id && s.status === "play" && p.alive ? `<button class="kick" data-kick="${esc(p.id)}" title="Убрать из игры (если отключился)" aria-label="Убрать ${esc(p.name)}">✕</button>` : ""}
+      ${isHost && p.bot && s.status === "lobby" ? `<button class="kick" data-unbot="${esc(p.id)}" title="Убрать бота" aria-label="Убрать ${esc(p.name)}">✕</button>` : ""}
+      ${isHost && p.id !== me.id && !p.bot && s.status === "play" && p.alive ? `<button class="kick" data-kick="${esc(p.id)}" title="Убрать из игры (если отключился)" aria-label="Убрать ${esc(p.name)}">✕</button>` : ""}
     </div>`).join("");
 
   let arena = "";
@@ -1490,8 +1596,9 @@ function renderGame() {
       <div class="modes">${Object.entries(MODES).map(([k, m]) => `<button class="mode ${(s.mode || "classic") === k ? "on" : ""}" data-mode="${k}" ${isHost ? "" : "disabled"}><b>${m.name}</b><span>${m.desc}</span></button>`).join("")}</div>
       <span class="label">Твой лемур</span>${avaPicker(my?.ava || me.ava)}
       <div class="row" style="justify-content:center"><button class="btn" id="copyLink">Скопировать ссылку</button>
+      ${isHost && s.players.length < MAX_PLAYERS ? `<button class="btn" id="addBot">🤖 Добавить бота</button>` : ""}
       ${isHost ? `<button class="btn primary big" id="start" ${s.players.length < 2 || (s.mode === "teams" && s.players.length !== 4) ? "disabled" : ""}>Начать игру</button>` : ""}</div>
-      <p class="muted" style="margin:0">${isHost ? (s.players.length < 2 ? "Нужен хотя бы ещё один игрок" : s.mode === "teams" && s.players.length !== 4 ? "Для команд нужно ровно 4 игрока, сейчас " + s.players.length : `Гостей: ${s.players.length} из ${MAX_PLAYERS}`) : `Ждём, когда ${esc(nm(s, s.host))} начнёт игру`}</p></div>`;
+      <p class="muted" style="margin:0">${isHost ? (s.players.length < 2 ? "Позови друзей или добавь бота, чтобы начать" : s.mode === "teams" && s.players.length !== 4 ? "Для команд нужно ровно 4 игрока, сейчас " + s.players.length : `Гостей: ${s.players.length} из ${MAX_PLAYERS}`) : `Ждём, когда ${esc(nm(s, s.host))} начнёт игру`}</p></div>`;
   } else if (s.status === "over") {
     const champ = P(s, s.winner);
     arena = `<div class="winner">${champ ? `<div class="win-ava">${avatar(champ, s.players.indexOf(champ))}</div>` : lemurSVG("shuffle")}${s.mode === "teams" && s.winTeam != null ? `<span class="label">Победила команда</span><h2>«${TEAM_NAMES[s.winTeam]}»</h2><p class="muted" style="margin:0">${s.players.filter(p => p.team === s.winTeam).map(p => esc(p.name)).join(" и ")}</p>` : `<span class="label">Король танцпола</span><h2>${esc(nm(s, s.winner) || "Никто")}</h2>`}
@@ -1622,6 +1729,8 @@ function bindGame() {
   on("shamanKeep", () => mutate(s => shamanChoice(s, me.id, false)));
   on("shamanBottom", () => mutate(s => shamanChoice(s, me.id, true)));
   on("giveMango", () => mutate(s => giveMango(s, me.id)));
+  on("addBot", () => mutate(s => addBot(s, me.id)));
+  $app.querySelectorAll("[data-unbot]").forEach(b => b.onclick = () => { const id = b.dataset.unbot; mutate(s => removeBot(s, me.id, id)); });
   $app.querySelectorAll("[data-target]").forEach(b => b.onclick = () => { ui.target = b.dataset.target; renderGame(); });
   $app.querySelectorAll("[data-pick]").forEach(b => b.onclick = () => { const k = +b.dataset.pick; mutate(s => boardTake(s, me.id, k)); });
   on("mute", () => { SFX.toggle(); renderGame(); });
@@ -1651,7 +1760,7 @@ function tick() {
   const ring = document.getElementById("ring");
   if (pd && ring) ring.setAttribute("stroke-dashoffset", (138.2 * (1 - Math.min(1, Math.max(0, pd.deadline - now()) / WINDOW_MS))).toFixed(1));
   if (!pd || resolving || game.status !== "play") return;
-  const grace = pd.by === me.id ? 0 : 3000;
+  const grace = pd.by === me.id || (P(game, pd.by)?.bot && game.host === me.id) ? 0 : 3000;
   if (now() >= pd.deadline + grace) {
     resolving = true;
     const key = pd.card.id;
@@ -1661,7 +1770,7 @@ function tick() {
     }).finally(() => { resolving = false; });
   }
 }
-setInterval(tick, 150);
+setInterval(() => { tick(); driveBots(); }, 150);
 
 // ---------- Boot ----------
 (async () => {
