@@ -180,7 +180,8 @@ input::placeholder { color: #6f978b; }
 .seat.out .ava { filter: grayscale(1); }
 .seat .kick { position: absolute; top: -6px; right: -6px; width: 22px; height: 22px; border-radius: 50%; border: 0; background: var(--bg); color: var(--muted); font-size: 11px; box-shadow: inset 0 0 0 1px var(--line); }
 .arena-wrap { margin-bottom: 8px; display: grid; grid-template-columns: minmax(0, 1fr) 270px; gap: 18px; }
-@media (max-width: 860px) { .arena-wrap { grid-template-columns: 1fr; } .log { max-height: 132px; } }
+/* On phones the hand goes right under the table and the log drops to the very bottom */
+@media (max-width: 860px) { .arena-wrap { display: contents; } .log { order: 10; max-height: 160px; } }
 .arena {
   border-radius: 28px; padding: 20px; display: grid; gap: 16px; min-width: 0; position: relative; overflow: hidden;
   background:
@@ -334,6 +335,20 @@ input::placeholder { color: #6f978b; }
 #drawfx.saved .dcap { color: #7dffa8; }
 #drawfx.mini .dcap, #drawfx.safe .dcap { color: var(--mango); }
 @media (max-width: 600px) {
+  .wrap { gap: 10px; }
+  .topbar .logo { font-size: 20px; }
+  .seats { flex-wrap: nowrap; overflow-x: auto; padding: 6px 2px; margin-inline: -2px; }
+  .seat { flex: 0 0 auto; gap: 6px; padding: 3px 10px 3px 3px; }
+  .seat .ava { width: 34px; height: 34px; }
+  .seat .nm { font-size: 13px; }
+  .seat .meta { font-size: 11px; }
+  .reacts { flex-wrap: nowrap; overflow-x: auto; gap: 4px; }
+  .rbtn { width: 34px; height: 34px; font-size: 17px; flex: 0 0 auto; }
+  .arena { --cw: 84px; padding: 14px 12px; gap: 10px; border-radius: 20px; }
+  .deckpile .count { min-width: 34px; height: 34px; font-size: 14px; top: -8px; right: -8px; }
+  .banner { font-size: 16px; }
+  .dock { padding-top: 8px; }
+  .hand { padding-top: 26px; }
   :root { --cw: 108px; }
   .card .c-name { font-size: 9.5px; }
   .card .c-text { font-size: 8.5px; }
