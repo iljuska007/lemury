@@ -309,6 +309,11 @@ input::placeholder { color: #6f978b; }
 .team { display: inline-block; margin-left: 6px; font-size: 10px; font-family: var(--display); font-weight: 800; padding: 1px 8px; border-radius: 999px; vertical-align: middle; }
 .team.t0 { background: #ff9a2a; color: #3a1a00; }
 .team.t1 { background: #ffe14d; color: #3a2a00; }
+.mate-hand { display: grid; gap: 6px; background: rgba(255,178,46,.07); border-radius: 14px; padding: 8px 10px; }
+.mate-row { display: flex; gap: 6px; overflow-x: auto; padding-bottom: 2px; }
+.mate-row .card { --cw: 62px; cursor: default; padding: 3px; border-radius: 10px; }
+.mate-row .card .c-name { font-size: 7px; min-height: 2.2em; padding: 3px 2px; border-radius: 7px 7px 3px 3px; }
+.mate-row .card .c-text { display: none; }
 .place.raid { background: rgba(60,36,4,.55); box-shadow: inset 0 0 0 2px var(--mango); }
 .pick-row { display: flex; gap: 10px; flex-wrap: wrap; justify-content: center; }
 .pickback { border: 0; padding: 0; background: none; border-radius: 16px; transition: transform .15s; }
@@ -390,7 +395,7 @@ const MODES = {
   classic: { name: "Обычная",      desc: "Классические правила, 2–6 игроков.", hand: 5, mult: 1, holes: 0, shields: 0, minis: 2 },
   quick:   { name: "Быстрая",      desc: "Колода вдвое меньше, на руках 4 карты. Партия минут на пять.", hand: 4, mult: .5, holes: 0, shields: 0, minis: 1 },
   chaos:   { name: "Хаос",         desc: "Взрывных лемуров на одного больше, манго вдвое больше, хлопушек тоже.", hand: 5, mult: 1, holes: 1, shields: 1, minis: 4 },
-  teams:   { name: "Команды 2×2",  desc: "Ровно 4 игрока. Напарники сидят через одного и могут передавать друг другу манго.", hand: 5, mult: 1, holes: 0, shields: 0, minis: 2 },
+  teams:   { name: "Команды 2×2",  desc: "Ровно 4 игрока. Напарники видят карты друг друга, не могут вредить своим, спасают напарника своим манго и наследуют его карты.", hand: 5, mult: 1, holes: 0, shields: 0, minis: 2 },
 };
 const TEAM_NAMES = ["Манго", "Банан"];
 const REACTIONS = ["😂", "😱", "😈", "🍌", "💥", "👏", "🙏", "😭"];
@@ -428,6 +433,7 @@ function P(s, id) { return s.players.find(p => p.id === id); }
 function nm(s, id) { return P(s, id)?.name || "?"; }
 function alive(s) { return s.players.filter(p => p.alive); }
 function curId(s) { return s.players[s.cur]?.id; }
+function sameSide(s, a, b) { return a === b || (s.mode === "teams" && !!a && !!b && P(s, a)?.team === P(s, b)?.team); }
 function partner(s, id) { const p = P(s, id); return s.mode === "teams" && p ? s.players.find(q => q.id !== id && q.team === p.team) : null; }
 
 function newGame(code, hostId, hostName, now, ava) {
@@ -598,7 +604,10 @@ function eliminate(s, id, why) {
   if (!p || !p.alive) return;
   const wasTurn = curId(s) === id;
   p.alive = false;
-  s.discard.push(...p.hand); p.hand = [];
+  const heir = partner(s, id);
+  if (heir?.alive && p.hand.length) { heir.hand.push(...p.hand); addLog(s, heir.name + " получает карты напарника"); }
+  else s.discard.push(...p.hand);
+  p.hand = [];
   if (s.pending && s.pending.by === id) s.pending = null;
   if (wasTurn) { s.phase = "normal"; s.placing = null; s.shaman = null; s.boardPick = null; }
   addLog(s, p.name + why);
@@ -626,6 +635,7 @@ function play(s, id, cardId, target, now) {
   if (targeted) {
     const tp = P(s, target);
     if (!tp || !tp.alive || tp.id === id) fail("Выбери игрока");
+    if (sameSide(s, id, tp.id)) fail("Против напарника эту карту играть нельзя");
     if (card.t === "board" && !tp.hand.length) fail("У " + tp.name + " нет карт");
   }
   takeFromHand(p, cardId);
@@ -638,15 +648,15 @@ function canJam(s, id) {
   const pd = s.pending;
   if (!pd) return false;
   const last = pd.jams[pd.jams.length - 1];
-  if (last === id) return false;
-  return !(pd.jams.length % 2 === 0 && pd.by === id);
+  if (last && sameSide(s, last, id)) return false;
+  return !(pd.jams.length % 2 === 0 && sameSide(s, pd.by, id));
 }
 function jam(s, id, cardId, now) {
   if (s.status !== "play" || !s.pending) fail("Нечего отменять");
   const p = P(s, id);
   if (!p?.alive) fail("Ты выбыл");
   const card = p.hand.find(c => c.id === cardId && c.t === "jam") || fail("У тебя нет карты «Неть!»");
-  if (!canJam(s, id)) fail("Нельзя сказать «Неть!» своему же ходу");
+  if (!canJam(s, id)) fail(s.mode === "teams" ? "Нельзя сказать «Неть!» своей команде" : "Нельзя сказать «Неть!» своему же ходу");
   takeFromHand(p, card.id);
   s.discard.push(card);
   s.pending.jams.push(id);
@@ -662,7 +672,11 @@ function resolve(s, now, rnd = Math.random) {
   switch (pd.card.t) {
     case "radar": s.peek = { by, cards: s.deck.slice(0, 3).map(c => c.t) }; break;
     case "warp": endTurn(s); break;
-    case "beam": { const n = s.turnsLeft + 1; advance(s); s.turnsLeft = n; addLog(s, "По указу " + nm(s, curId(s)) + " ходит " + n + " раз(а)"); break; }
+    case "beam": {
+      const n = s.turnsLeft + 1; advance(s);
+      for (let k = 0; k < s.players.length && sameSide(s, curId(s), by) && alive(s).some(p => !sameSide(s, p.id, by)); k++) advance(s); s.turnsLeft = n; addLog(s, "По указу " + nm(s, curId(s)) + " ходит " + n + " раз(а)");
+      break;
+    }
     case "shuffle": shuffleArr(s.deck, rnd); s.peek = null; addLog(s, "Колода перемешана"); break;
     case "board":
       if (tp?.alive && tp.hand.length && me?.alive && curId(s) === by) {
@@ -726,9 +740,13 @@ function drawCard(s, id, bottom = false, rnd = Math.random) {
   s.drawSeq = (s.drawSeq || 0) + 1;
   const mark = res => { s.lastDraw = { n: s.drawSeq, by: id, t: card.t, res }; };
   if (card.t === "hole") {
-    const sh = p.hand.find(c => c.t === "shield");
+    const mate = partner(s, id);
+    const own = p.hand.find(c => c.t === "shield");
+    const giver = own ? p : mate?.alive && mate.hand.some(c => c.t === "shield") ? mate : null;
+    const sh = giver && giver.hand.find(c => c.t === "shield");
     if (sh) {
-      takeFromHand(p, sh.id); s.discard.push(sh);
+      takeFromHand(giver, sh.id); s.discard.push(sh);
+      if (giver !== p) addLog(s, giver.name + " бросает напарнику своё манго!");
       s.phase = "placing"; s.placing = card; s.peek = null;
       mark("saved");
       addLog(s, p.name + " вытягивает взрывного лемура, но успокаивает его манго!");
@@ -1679,12 +1697,15 @@ function renderGame() {
   }
 
   let dock = "";
+  const mateP = s.status === "play" ? partner(s, me.id) : null;
+  const mateHTML = mateP?.alive ? `<div class="mate-hand"><span class="label">Карты напарника ${esc(mateP.name)} · ${mateP.hand.length}</span>
+    <div class="mate-row">${mateP.hand.map(c => cardHTML({ t: c.t })).join("") || '<span class="muted">пусто</span>'}</div></div>` : "";
   if (my && s.status === "play") {
-    if (!my.alive) dock = `<div class="dock"><div class="panel out-note"><b>Тебя взорвали 💥</b><span class="muted">Досмотри партию и поддержи друзей.</span></div></div>`;
+    if (!my.alive) dock = `<div class="dock"><div class="panel out-note"><b>Тебя взорвали 💥</b><span class="muted">${mateP?.alive ? "Твои карты перешли напарнику. Болей за него!" : "Досмотри партию и поддержи друзей."}</span></div>${mateHTML}</div>`;
     else {
       const selCard = my.hand.find(c => c.id === ui.sel);
       const canPlay = myTurn && !s.pending && s.phase === "normal";
-      const targetsFor = t => s.players.filter(p => p.alive && p.id !== me.id && (t !== "board" || p.hand.length));
+      const targetsFor = t => s.players.filter(p => p.alive && p.id !== me.id && !sameSide(s, p.id, me.id) && (t !== "board" || p.hand.length));
       let act = `<span class="muted">${canPlay ? "Выбери карту, чтобы сыграть её" : "Нажми на карту, чтобы рассмотреть"}</span>`;
       if (selCard) {
         const playable = canPlay && !UNPLAYABLE.includes(selCard.t);
@@ -1703,7 +1724,7 @@ function renderGame() {
       if (mate?.alive && canPlay && my.hand.some(c => c.t === "shield")) act += `<button class="btn" id="giveMango">🥭 Манго напарнику</button>`;
       const n = my.hand.length;
       dock = `<div class="dock"><div class="dock-head"><span class="label">Твои карты · ${n}</span><div class="actions">${act}</div></div>
-        <div class="hand">${my.hand.map((c, i) => { const off = i - (n - 1) / 2; return cardHTML({ ...c, style: `;--off:${off};--off2:${Math.abs(off) ** 1.6}` }, c.id === ui.sel ? "sel" : ""); }).join("")}</div></div>`;
+        ${mateHTML}<div class="hand">${my.hand.map((c, i) => { const off = i - (n - 1) / 2; return cardHTML({ ...c, style: `;--off:${off};--off2:${Math.abs(off) ** 1.6}` }, c.id === ui.sel ? "sel" : ""); }).join("")}</div></div>`;
     }
   }
 
