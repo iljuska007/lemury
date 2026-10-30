@@ -15,6 +15,16 @@ from urllib.parse import parse_qs, urlparse
 PORT = int(os.environ.get("PORT", "8765"))
 ROOT = os.path.dirname(os.path.abspath(__file__))
 CODE_RE = re.compile(r"^[A-Z]{4}$")
+# Files the server hands out as-is: path -> (file, content type, caching)
+STATIC = {
+    "/": ("index.html", "text/html; charset=utf-8", "no-store"),
+    "/index.html": ("index.html", "text/html; charset=utf-8", "no-store"),
+    "/manifest.webmanifest": ("manifest.webmanifest", "application/manifest+json", "max-age=3600"),
+    "/sw.js": ("sw.js", "text/javascript; charset=utf-8", "no-store"),
+    "/icon-192.png": ("icon-192.png", "image/png", "max-age=86400"),
+    "/icon-512.png": ("icon-512.png", "image/png", "max-age=86400"),
+    "/apple-touch-icon.png": ("apple-touch-icon.png", "image/png", "max-age=86400"),
+}
 CARDS_DIR = os.path.join(ROOT, "cards")
 CARD_TYPES = {"hole", "shield", "radar", "warp", "beam", "shuffle", "board", "worm", "jam", "reverse", "drift"}
 IMAGE_TYPES = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif", ".webp": "image/webp"}
@@ -65,12 +75,13 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         url = urlparse(self.path)
         q = parse_qs(url.query)
-        if url.path in ("/", "/index.html"):
-            with open(os.path.join(ROOT, "index.html"), "rb") as f:
+        if url.path in STATIC:
+            name, ctype, cache = STATIC[url.path]
+            with open(os.path.join(ROOT, name), "rb") as f:
                 body = f.read()
             self.send_response(200)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Type", ctype)
+            self.send_header("Cache-Control", cache)
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
